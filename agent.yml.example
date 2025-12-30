@@ -1,0 +1,65 @@
+# ClusterEye Agent Configuration for ClickHouse
+# Copy this file to agent.yml and configure accordingly
+
+# Agent identification
+key: "your-agent-key-here"
+name: "clickhouse-agent-1"
+
+# ClickHouse database configuration
+clickhouse:
+  host: "localhost"
+  port: "9000"
+  user: "default"
+  pass: ""
+  database: "default"
+  cluster: "my_cluster"
+  location: "datacenter-1"
+  auth: false
+  tls_enabled: false
+  ca_path: ""
+
+  # Query monitoring configuration
+  query_monitoring:
+    enabled: true
+    collection_interval_sec: 60
+    max_queries_per_collection: 100
+    slow_query_threshold_ms: 1000
+    cpu_threshold_percent: 80.0
+    memory_limit_mb: 1024
+    max_query_text_length: 4000
+
+  # Cluster monitoring configuration
+  cluster_monitoring:
+    enabled: true
+    check_interval_sec: 30
+    replica_timeout: 10
+
+# gRPC server configuration
+grpc:
+  server_address: "localhost:50051"
+  tls_enabled: false
+  insecure_skip_verify: false
+  connection_interval_sec: 5
+  unhealthy_interval_sec: 30
+  max_retry_delay_sec: 300
+  max_retries: 5
+  health_check_interval_sec: 10
+
+# Logging configuration
+logging:
+  level: "info"  # debug, info, warning, error, fatal
+  use_event_log: false  # Windows Event Log (Windows only)
+  use_file_log: true
+
+# Configuration drift detection
+config_drift:
+  enabled: true
+  watch_interval_sec: 30
+  clickhouse_config_paths:
+    - "/etc/clickhouse-server/config.xml"
+    - "/etc/clickhouse-server/users.xml"
+
+# Profiling (for debugging)
+profiling:
+  enabled: false
+  port: 6060
