@@ -62,7 +62,7 @@ type AgentConfig struct {
 	} `yaml:"logging"`
 
 	ConfigDrift struct {
-		Enabled               int      `yaml:"enabled"`
+		Enabled               bool     `yaml:"enabled"`
 		WatchIntervalSec      int      `yaml:"watch_interval_sec"`
 		ClickhouseConfigPaths []string `yaml:"clickhouse_config_paths"`
 	} `yaml:"config_drift"`
@@ -197,7 +197,7 @@ logging:
   use_file_log: true
 
 config_drift:
-  enabled: 1
+  enabled: true
   watch_interval_sec: 30
   clickhouse_config_paths:
     - "/etc/clickhouse-server/config.xml"

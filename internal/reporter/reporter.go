@@ -2,6 +2,7 @@ package reporter
 
 import (
 	"context"
+	"crypto/tls"
 	"fmt"
 	"net"
 	"os"
@@ -13,6 +14,7 @@ import (
 	"github.com/CloudNativeWorks/clustereye-agent-clickhouse/internal/model"
 	pb "github.com/CloudNativeWorks/clustereye-api/pkg/agent"
 	"google.golang.org/grpc"
+	"google.golang.org/grpc/credentials"
 	"google.golang.org/grpc/credentials/insecure"
 	"google.golang.org/grpc/keepalive"
 )
@@ -74,22 +76,37 @@ func (r *Reporter) Connect() error {
 		PermitWithoutStream: true,
 	}
 
+	// Setup transport credentials
+	var creds credentials.TransportCredentials
+	if r.cfg.GRPC.TLSEnabled {
+		if r.cfg.GRPC.InsecureSkipVerify {
+			// TLS with certificate verification disabled (for development)
+			creds = credentials.NewTLS(&tls.Config{
+				InsecureSkipVerify: true,
+				NextProtos:         []string{"h2"}, // Force HTTP/2
+			})
+			logger.Info("Using TLS with certificate verification disabled")
+		} else {
+			// Secure TLS connection (for production)
+			creds = credentials.NewTLS(&tls.Config{
+				NextProtos: []string{"h2"}, // Force HTTP/2
+			})
+			logger.Info("Using secure TLS connection")
+		}
+	} else {
+		// No TLS
+		creds = insecure.NewCredentials()
+		logger.Info("Using insecure connection (no TLS)")
+	}
+
 	// Setup dial options
 	opts := []grpc.DialOption{
+		grpc.WithTransportCredentials(creds),
 		grpc.WithKeepaliveParams(kacp),
 		grpc.WithDefaultCallOptions(
 			grpc.MaxCallRecvMsgSize(128 * 1024 * 1024), // 128MB
 			grpc.MaxCallSendMsgSize(128 * 1024 * 1024), // 128MB
 		),
-	}
-
-	// Add TLS or insecure credentials
-	if r.cfg.GRPC.TLSEnabled {
-		// TODO: Add TLS credentials
-		logger.Warning("TLS is enabled but not implemented yet, using insecure connection")
-		opts = append(opts, grpc.WithTransportCredentials(insecure.NewCredentials()))
-	} else {
-		opts = append(opts, grpc.WithTransportCredentials(insecure.NewCredentials()))
 	}
 
 	// Dial server
