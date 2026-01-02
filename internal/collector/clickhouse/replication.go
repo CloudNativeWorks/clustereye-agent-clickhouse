@@ -197,14 +197,15 @@ func (c *ClickhouseCollector) CollectSystemTablesData() (*model.SystemTablesData
 
 		for processRows.Next() {
 			var proc model.ProcessInfo
+			var rowsRead, bytesRead uint64
 
 			err := processRows.Scan(
 				&proc.QueryID,
 				&proc.User,
 				&proc.Address,
 				&proc.ElapsedTime,
-				&proc.RowsRead,
-				&proc.BytesRead,
+				&rowsRead,
+				&bytesRead,
 				&proc.MemoryUsage,
 				&proc.Query,
 			)
@@ -213,6 +214,10 @@ func (c *ClickhouseCollector) CollectSystemTablesData() (*model.SystemTablesData
 				logger.Warning("Failed to scan process row: %v", err)
 				continue
 			}
+
+			// Convert UInt64 to int64
+			proc.RowsRead = int64(rowsRead)
+			proc.BytesRead = int64(bytesRead)
 
 			// Truncate query if too long
 			if len(proc.Query) > 1000 {
@@ -276,9 +281,9 @@ func (c *ClickhouseCollector) CollectSystemTablesData() (*model.SystemTablesData
 			table,
 			elapsed,
 			progress,
-			total_rows,
-			read_bytes,
-			written_bytes
+			num_parts,
+			total_size_bytes_compressed,
+			total_size_bytes_uncompressed
 		FROM system.merges
 		ORDER BY elapsed DESC
 		LIMIT 50
@@ -291,21 +296,27 @@ func (c *ClickhouseCollector) CollectSystemTablesData() (*model.SystemTablesData
 
 		for mergeRows.Next() {
 			var merge model.MergeInfo
+			var numParts, totalSizeCompressed, totalSizeUncompressed uint64
 
 			err := mergeRows.Scan(
 				&merge.Database,
 				&merge.Table,
 				&merge.ElapsedTime,
 				&merge.Progress,
-				&merge.TotalRows,
-				&merge.BytesRead,
-				&merge.BytesWritten,
+				&numParts,
+				&totalSizeCompressed,
+				&totalSizeUncompressed,
 			)
 
 			if err != nil {
 				logger.Warning("Failed to scan merge row: %v", err)
 				continue
 			}
+
+			// Use num_parts as TotalRows and sizes as bytes
+			merge.TotalRows = int64(numParts)
+			merge.BytesRead = int64(totalSizeUncompressed)
+			merge.BytesWritten = int64(totalSizeCompressed)
 
 			data.Merges = append(data.Merges, merge)
 		}

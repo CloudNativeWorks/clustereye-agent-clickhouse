@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/tls"
 	"fmt"
+	"net"
 	"sync"
 	"time"
 
@@ -258,6 +259,7 @@ func (c *ClickhouseCollector) GetClickhouseInfo() (*model.ClickhouseInfo, error)
 		Location:      c.cfg.Clickhouse.Location,
 		Port:          c.cfg.Clickhouse.Port,
 		Status:        "running",
+		IP:            getLocalIP(),
 		LastCheckTime: time.Now(),
 	}
 
@@ -280,29 +282,31 @@ func (c *ClickhouseCollector) GetClickhouseInfo() (*model.ClickhouseInfo, error)
 	}
 
 	// Get uptime
-	var uptime int64
+	var uptime uint32
 	err = conn.QueryRow(ctx, "SELECT uptime()").Scan(&uptime)
 	if err != nil {
 		logger.Warning("Failed to get uptime: %v", err)
 	} else {
-		info.Uptime = uptime
+		info.Uptime = int64(uptime)
 	}
 
-	// Get data path
+	// Get data path from system.disks table (more reliable)
 	var dataPath string
-	err = conn.QueryRow(ctx, "SELECT value FROM system.settings WHERE name = 'path'").Scan(&dataPath)
+	err = conn.QueryRow(ctx, "SELECT path FROM system.disks WHERE name = 'default' LIMIT 1").Scan(&dataPath)
 	if err != nil {
-		// Try alternative query
-		err = conn.QueryRow(ctx, "SELECT toString(getSetting('path'))").Scan(&dataPath)
+		// Fallback: try to get from system.settings
+		err = conn.QueryRow(ctx, "SELECT value FROM system.settings WHERE name = 'path'").Scan(&dataPath)
 		if err != nil {
 			logger.Debug("Failed to get data path: %v", err)
+			// Use default path as last resort
+			dataPath = "/var/lib/clickhouse/"
 		}
 	}
 	info.DataPath = dataPath
 
 	// Check if clustering is enabled
 	if c.cfg.Clickhouse.Cluster != "" {
-		var shardCount, replicaCount int
+		var shardCount, replicaCount uint64
 		err = conn.QueryRow(ctx,
 			"SELECT uniq(shard_num), uniq(replica_num) FROM system.clusters WHERE cluster = ?",
 			c.cfg.Clickhouse.Cluster).Scan(&shardCount, &replicaCount)
@@ -311,13 +315,70 @@ func (c *ClickhouseCollector) GetClickhouseInfo() (*model.ClickhouseInfo, error)
 			logger.Debug("Failed to get cluster info: %v", err)
 		} else {
 			info.IsReplicated = replicaCount > 1
-			info.ShardCount = shardCount
-			info.ReplicaCount = replicaCount
+			info.ShardCount = int(shardCount)
+			info.ReplicaCount = int(replicaCount)
 		}
+	}
+
+	// Get CPU count from asynchronous_metrics (numeric value only)
+	var cpuCount float64
+	err = conn.QueryRow(ctx, "SELECT value FROM system.asynchronous_metrics WHERE metric IN ('OSUserTimeCPUCores', 'NumberOfLogicalCPUCores', 'NumberOfPhysicalCPUCores') AND value != '' LIMIT 1").Scan(&cpuCount)
+	if err != nil {
+		// Fallback: try from system.settings
+		var cpuStr string
+		err = conn.QueryRow(ctx, "SELECT value FROM system.settings WHERE name = 'max_threads' LIMIT 1").Scan(&cpuStr)
+		if err != nil {
+			logger.Debug("Failed to get CPU count: %v", err)
+			info.TotalVCPU = 0
+		} else {
+			// Parse the CPU count from string (might be 'auto' or a number)
+			if cpuStr == "auto" || cpuStr == "" {
+				info.TotalVCPU = 0
+			} else {
+				fmt.Sscanf(cpuStr, "%d", &info.TotalVCPU)
+			}
+		}
+	} else {
+		info.TotalVCPU = int(cpuCount)
+	}
+
+	// Get total memory from asynchronous_metrics (numeric value only)
+	var totalMemory float64
+	err = conn.QueryRow(ctx, "SELECT value FROM system.asynchronous_metrics WHERE metric IN ('OSMemoryTotal', 'OSMemoryAvailable', 'MemoryTracking') AND value != '' LIMIT 1").Scan(&totalMemory)
+	if err != nil {
+		// Fallback: try from system.metrics
+		var memBytes int64
+		err = conn.QueryRow(ctx, "SELECT value FROM system.metrics WHERE metric = 'MemoryTracking' LIMIT 1").Scan(&memBytes)
+		if err != nil {
+			logger.Debug("Failed to get total memory: %v", err)
+			info.TotalMemory = 0
+		} else {
+			info.TotalMemory = memBytes
+		}
+	} else {
+		info.TotalMemory = int64(totalMemory)
 	}
 
 	info.NodeStatus = "active"
 	return info, nil
+}
+
+// getLocalIP returns the local IP address
+func getLocalIP() string {
+	addrs, err := net.InterfaceAddrs()
+	if err != nil {
+		return "unknown"
+	}
+
+	for _, addr := range addrs {
+		if ipnet, ok := addr.(*net.IPNet); ok && !ipnet.IP.IsLoopback() {
+			if ipnet.IP.To4() != nil {
+				return ipnet.IP.String()
+			}
+		}
+	}
+
+	return "unknown"
 }
 
 // CollectData collects all ClickHouse data

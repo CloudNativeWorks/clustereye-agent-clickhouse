@@ -312,21 +312,55 @@ func (r *Reporter) sendClickhouseInfo(info *model.ClickhouseInfo) error {
 
 // sendClickhouseMetrics sends ClickHouse performance metrics
 func (r *Reporter) sendClickhouseMetrics(metrics *model.ClickhouseMetrics) error {
-	batch := ConvertClickhouseMetricsToMetrics(r.cfg.Key, metrics)
+	// Get hostname for the request
+	hostname, err := os.Hostname()
+	if err != nil {
+		hostname = "unknown"
+	}
 
-	req := &pb.SendMetricsRequest{
-		Batch: batch,
+	// Convert model metrics to protobuf
+	pbMetrics := &pb.ClickhouseMetrics{
+		CurrentConnections:       metrics.CurrentConnections,
+		MaxConnections:           metrics.MaxConnections,
+		QueriesPerSecond:         metrics.QueriesPerSecond,
+		SelectQueriesPerSecond:   metrics.SelectQueriesPerSecond,
+		InsertQueriesPerSecond:   metrics.InsertQueriesPerSecond,
+		RunningQueries:           metrics.RunningQueries,
+		QueuedQueries:            metrics.QueuedQueries,
+		MemoryUsage:              metrics.MemoryUsage,
+		MemoryAvailable:          metrics.MemoryAvailable,
+		MemoryPercent:            metrics.MemoryPercent,
+		DiskUsage:                metrics.DiskUsage,
+		DiskAvailable:            metrics.DiskAvailable,
+		DiskPercent:              metrics.DiskPercent,
+		MergesInProgress:         metrics.MergesInProgress,
+		PartsCount:               metrics.PartsCount,
+		RowsRead:                 metrics.RowsRead,
+		BytesRead:                metrics.BytesRead,
+		NetworkReceiveBytes:      metrics.NetworkReceiveBytes,
+		NetworkSendBytes:         metrics.NetworkSendBytes,
+		CpuUsage:                 metrics.CPUUsage,
+		MarkCacheBytes:           metrics.MarkCacheBytes,
+		MarkCacheFiles:           metrics.MarkCacheFiles,
+		CollectionTime:           metrics.CollectionTime.UnixNano(),
+	}
+
+	req := &pb.ClickhouseMetricsRequest{
+		AgentKey:    r.cfg.Key,
+		ClusterName: r.cfg.Clickhouse.Cluster,
+		Hostname:    hostname,
+		Metrics:     pbMetrics,
 	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
-	resp, err := r.client.SendMetrics(ctx, req)
+	resp, err := r.client.SendClickhouseMetrics(ctx, req)
 	if err != nil {
 		return fmt.Errorf("failed to send ClickHouse metrics: %w", err)
 	}
 
-	logger.Debug("ClickHouse metrics sent: %s (%d metrics)", resp.Status, resp.ProcessedCount)
+	logger.Debug("ClickHouse metrics sent: %s - %s", resp.Status, resp.Message)
 	return nil
 }
 

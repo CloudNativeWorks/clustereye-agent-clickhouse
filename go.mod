@@ -4,7 +4,7 @@ go 1.24.0
 
 require (
 	github.com/ClickHouse/clickhouse-go/v2 v2.18.0
-	github.com/CloudNativeWorks/clustereye-api v1.1.0
+	github.com/CloudNativeWorks/clustereye-api v1.1.2
 	github.com/shirou/gopsutil/v3 v3.23.12
 	golang.org/x/sys v0.38.0
 	google.golang.org/grpc v1.78.0

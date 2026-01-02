@@ -44,7 +44,7 @@ func (c *ClickhouseCollector) CollectMetrics() (*model.ClickhouseMetrics, error)
 	metrics.MaxConnections = maxConns
 
 	// Get query metrics
-	var queriesPerSec, selectPerSec, insertPerSec float64
+	var queriesPerSec, selectPerSec, insertPerSec uint64
 	err = conn.QueryRow(ctx, `
 		SELECT
 			sum(ProfileEvent_Query),
@@ -57,31 +57,28 @@ func (c *ClickhouseCollector) CollectMetrics() (*model.ClickhouseMetrics, error)
 	if err != nil {
 		logger.Debug("Failed to get query metrics from metric_log: %v", err)
 		// Fallback to system.events
+		var queryCount uint64
 		err = conn.QueryRow(ctx, `
 			SELECT value FROM system.events WHERE event = 'Query'
-		`).Scan(&queriesPerSec)
+		`).Scan(&queryCount)
 		if err == nil {
-			queriesPerSec = queriesPerSec / 60.0 // approximate per second
+			queriesPerSec = queryCount
 		}
-	} else {
-		queriesPerSec = queriesPerSec / 60.0
-		selectPerSec = selectPerSec / 60.0
-		insertPerSec = insertPerSec / 60.0
 	}
 
-	metrics.QueriesPerSecond = queriesPerSec
-	metrics.SelectQueriesPerSecond = selectPerSec
-	metrics.InsertQueriesPerSecond = insertPerSec
+	metrics.QueriesPerSecond = float64(queriesPerSec) / 60.0
+	metrics.SelectQueriesPerSecond = float64(selectPerSec) / 60.0
+	metrics.InsertQueriesPerSecond = float64(insertPerSec) / 60.0
 
 	// Get running queries
-	var runningQueries int64
+	var runningQueries uint64
 	err = conn.QueryRow(ctx, `
 		SELECT count() FROM system.processes
 	`).Scan(&runningQueries)
 	if err != nil {
 		logger.Debug("Failed to get running queries: %v", err)
 	}
-	metrics.RunningQueries = runningQueries
+	metrics.RunningQueries = int64(runningQueries)
 
 	// Get memory metrics
 	var memoryUsage, memoryAvailable int64
@@ -107,27 +104,32 @@ func (c *ClickhouseCollector) CollectMetrics() (*model.ClickhouseMetrics, error)
 		metrics.MemoryPercent = (float64(memoryUsage) / float64(totalMemory)) * 100
 	}
 
-	// Get disk metrics
-	var diskUsage, diskFree int64
+	// Get disk metrics from system.parts
+	var diskUsage uint64
 	err = conn.QueryRow(ctx, `
-		SELECT
-			sum(bytes_on_disk) as used,
-			sum(free_space) as free
-		FROM system.disks
-	`).Scan(&diskUsage, &diskFree)
+		SELECT sum(bytes_on_disk)
+		FROM system.parts
+		WHERE active = 1
+	`).Scan(&diskUsage)
 	if err != nil {
-		logger.Debug("Failed to get disk metrics: %v", err)
+		logger.Debug("Failed to get disk usage: %v", err)
 	} else {
-		metrics.DiskUsage = diskUsage
-		metrics.DiskAvailable = diskFree
-		totalDisk := diskUsage + diskFree
-		if totalDisk > 0 {
-			metrics.DiskPercent = (float64(diskUsage) / float64(totalDisk)) * 100
+		metrics.DiskUsage = int64(diskUsage)
+
+		// Try to get free space from system.disks
+		var freeSpace uint64
+		err = conn.QueryRow(ctx, `SELECT sum(free_space) FROM system.disks`).Scan(&freeSpace)
+		if err == nil {
+			metrics.DiskAvailable = int64(freeSpace)
+			totalDisk := int64(diskUsage + freeSpace)
+			if totalDisk > 0 {
+				metrics.DiskPercent = (float64(diskUsage) / float64(totalDisk)) * 100
+			}
 		}
 	}
 
 	// Get merge metrics
-	var mergesInProgress, partsCount int64
+	var mergesInProgress int64
 	err = conn.QueryRow(ctx, `
 		SELECT value FROM system.metrics WHERE metric = 'Merge'
 	`).Scan(&mergesInProgress)
@@ -136,16 +138,17 @@ func (c *ClickhouseCollector) CollectMetrics() (*model.ClickhouseMetrics, error)
 	}
 	metrics.MergesInProgress = mergesInProgress
 
+	var partsCount uint64
 	err = conn.QueryRow(ctx, `
-		SELECT sum(parts) FROM system.parts WHERE active = 1
+		SELECT count() FROM system.parts WHERE active = 1
 	`).Scan(&partsCount)
 	if err != nil {
 		logger.Debug("Failed to get parts count: %v", err)
 	}
-	metrics.PartsCount = partsCount
+	metrics.PartsCount = int64(partsCount)
 
 	// Get read metrics
-	var rowsRead, bytesRead int64
+	var rowsRead, bytesRead uint64
 	err = conn.QueryRow(ctx, `
 		SELECT
 			sum(ProfileEvent_SelectedRows),
@@ -156,11 +159,11 @@ func (c *ClickhouseCollector) CollectMetrics() (*model.ClickhouseMetrics, error)
 	if err != nil {
 		logger.Debug("Failed to get read metrics: %v", err)
 	}
-	metrics.RowsRead = rowsRead
-	metrics.BytesRead = bytesRead
+	metrics.RowsRead = int64(rowsRead)
+	metrics.BytesRead = int64(bytesRead)
 
 	// Get network metrics
-	var networkReceive, networkSend int64
+	var networkReceive, networkSend uint64
 	err = conn.QueryRow(ctx, `
 		SELECT
 			sum(ProfileEvent_NetworkReceiveBytes),
@@ -171,8 +174,8 @@ func (c *ClickhouseCollector) CollectMetrics() (*model.ClickhouseMetrics, error)
 	if err != nil {
 		logger.Debug("Failed to get network metrics: %v", err)
 	}
-	metrics.NetworkReceiveBytes = networkReceive
-	metrics.NetworkSendBytes = networkSend
+	metrics.NetworkReceiveBytes = int64(networkReceive)
+	metrics.NetworkSendBytes = int64(networkSend)
 
 	// Get CPU usage
 	var cpuUsage float64
@@ -252,21 +255,22 @@ func (c *ClickhouseCollector) CollectQueries() ([]model.ClickhouseQuery, error) 
 	for rows.Next() {
 		var q model.ClickhouseQuery
 		var databases, tables []string
-		var queryType int8
+		var queryType string
+		var queryDurationMs, memoryUsage, readRows, readBytes, writtenRows, writtenBytes, resultRows, resultBytes uint64
 
 		err := rows.Scan(
 			&q.QueryID,
 			&q.Query,
 			&q.User,
 			&q.QueryStartTime,
-			&q.QueryDuration,
-			&q.MemoryUsage,
-			&q.ReadRows,
-			&q.ReadBytes,
-			&q.WrittenRows,
-			&q.WrittenBytes,
-			&q.ResultRows,
-			&q.ResultBytes,
+			&queryDurationMs,
+			&memoryUsage,
+			&readRows,
+			&readBytes,
+			&writtenRows,
+			&writtenBytes,
+			&resultRows,
+			&resultBytes,
 			&queryType,
 			&databases,
 			&tables,
@@ -278,16 +282,26 @@ func (c *ClickhouseCollector) CollectQueries() ([]model.ClickhouseQuery, error) 
 			continue
 		}
 
-		// Map query type
+		// Convert UInt64 to appropriate types
+		q.QueryDuration = float64(queryDurationMs)
+		q.MemoryUsage = int64(memoryUsage)
+		q.ReadRows = int64(readRows)
+		q.ReadBytes = int64(readBytes)
+		q.WrittenRows = int64(writtenRows)
+		q.WrittenBytes = int64(writtenBytes)
+		q.ResultRows = int64(resultRows)
+		q.ResultBytes = int64(resultBytes)
+
+		// Map query type (from Enum8 string value)
 		switch queryType {
-		case 1:
+		case "QueryStart":
+			q.QueryType = "RUNNING"
+		case "QueryFinish":
 			q.QueryType = "SELECT"
-		case 2:
-			q.QueryType = "INSERT"
-		case 3:
-			q.QueryType = "DDL"
+		case "ExceptionBeforeStart", "ExceptionWhileProcessing":
+			q.QueryType = "ERROR"
 		default:
-			q.QueryType = "OTHER"
+			q.QueryType = queryType
 		}
 
 		// Get first database
@@ -351,17 +365,18 @@ func (c *ClickhouseCollector) CollectTableMetrics() ([]model.TableMetric, error)
 
 	for rows.Next() {
 		var t model.TableMetric
+		var totalRows, totalBytes, partsCount, activeParts, compressedSize, uncompressedSize uint64
 
 		err := rows.Scan(
 			&t.Database,
 			&t.Table,
 			&t.Engine,
-			&t.TotalRows,
-			&t.TotalBytes,
-			&t.PartsCount,
-			&t.ActiveParts,
-			&t.CompressedSize,
-			&t.UncompressedSize,
+			&totalRows,
+			&totalBytes,
+			&partsCount,
+			&activeParts,
+			&compressedSize,
+			&uncompressedSize,
 			&t.LastModifiedTime,
 		)
 
@@ -369,6 +384,14 @@ func (c *ClickhouseCollector) CollectTableMetrics() ([]model.TableMetric, error)
 			logger.Warning("Failed to scan table metric row: %v", err)
 			continue
 		}
+
+		// Convert UInt64 to int64
+		t.TotalRows = int64(totalRows)
+		t.TotalBytes = int64(totalBytes)
+		t.PartsCount = int64(partsCount)
+		t.ActiveParts = int64(activeParts)
+		t.CompressedSize = int64(compressedSize)
+		t.UncompressedSize = int64(uncompressedSize)
 
 		// Calculate compression ratio
 		if t.UncompressedSize > 0 {
