@@ -298,6 +298,20 @@ func (r *Reporter) SendData(data interface{}) error {
 		if err := r.sendSystemMetrics(systemData.System); err != nil {
 			logger.Warning("Failed to send system metrics: %v", err)
 		}
+
+		// Send network metrics as MetricBatch
+		if len(systemData.System.NetworkInterfaces) > 0 {
+			if err := r.sendNetworkMetrics(systemData.System.NetworkInterfaces); err != nil {
+				logger.Warning("Failed to send network metrics: %v", err)
+			}
+		}
+
+		// Send disk I/O metrics as MetricBatch
+		if len(systemData.System.DiskIOMetrics) > 0 {
+			if err := r.sendDiskIOMetrics(systemData.System.DiskIOMetrics); err != nil {
+				logger.Warning("Failed to send disk I/O metrics: %v", err)
+			}
+		}
 	}
 
 	// Send ClickHouse data with advanced metrics using new API
@@ -342,6 +356,52 @@ func (r *Reporter) sendSystemMetrics(metrics *model.SystemMetrics) error {
 	resp.Metrics = pbMetrics
 
 	logger.Debug("System metrics sent: %s", resp.Status)
+	return nil
+}
+
+// sendNetworkMetrics sends network interface metrics to the server
+func (r *Reporter) sendNetworkMetrics(networkMetrics []model.NetworkInterfaceMetrics) error {
+	batch := ConvertNetworkMetricsToMetricBatch(r.cfg.Key, networkMetrics)
+	if batch == nil {
+		return nil
+	}
+
+	req := &pb.SendMetricsRequest{
+		Batch: batch,
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	resp, err := r.client.SendMetrics(ctx, req)
+	if err != nil {
+		return fmt.Errorf("failed to send network metrics: %w", err)
+	}
+
+	logger.Debug("Network metrics sent: %s (interfaces: %d)", resp.Status, len(networkMetrics))
+	return nil
+}
+
+// sendDiskIOMetrics sends disk I/O metrics to the server
+func (r *Reporter) sendDiskIOMetrics(diskMetrics []model.DiskIOMetrics) error {
+	batch := ConvertDiskIOMetricsToMetricBatch(r.cfg.Key, diskMetrics)
+	if batch == nil {
+		return nil
+	}
+
+	req := &pb.SendMetricsRequest{
+		Batch: batch,
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	resp, err := r.client.SendMetrics(ctx, req)
+	if err != nil {
+		return fmt.Errorf("failed to send disk I/O metrics: %w", err)
+	}
+
+	logger.Debug("Disk I/O metrics sent: %s (disks: %d)", resp.Status, len(diskMetrics))
 	return nil
 }
 
@@ -493,6 +553,7 @@ func (r *Reporter) sendClickhouseData(chData *model.ClickhouseData) error {
 			CpuUsage:               chData.Metrics.CPUUsage,
 			MarkCacheBytes:         chData.Metrics.MarkCacheBytes,
 			MarkCacheFiles:         chData.Metrics.MarkCacheFiles,
+			ResponseTimeMs:         chData.Metrics.ResponseTimeMs,
 			CollectionTime:         chData.Metrics.CollectionTime.UnixNano(),
 		}
 	}

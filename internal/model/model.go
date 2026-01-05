@@ -237,6 +237,43 @@ type SystemMetrics struct {
 	LoadAverage     []float64 `json:"load_average,omitempty"`
 	Uptime          int64     `json:"uptime"`
 	Timestamp       time.Time `json:"timestamp"`
+
+	// Network metrics
+	NetworkInterfaces []NetworkInterfaceMetrics `json:"network_interfaces,omitempty"`
+
+	// Disk I/O metrics
+	DiskIOMetrics []DiskIOMetrics `json:"disk_io_metrics,omitempty"`
+}
+
+// NetworkInterfaceMetrics contains metrics for a network interface
+type NetworkInterfaceMetrics struct {
+	Interface           string  `json:"interface"`
+	BytesSent           uint64  `json:"bytes_sent"`
+	BytesReceived       uint64  `json:"bytes_received"`
+	PacketsSent         uint64  `json:"packets_sent"`
+	PacketsReceived     uint64  `json:"packets_received"`
+	ErrorsIn            uint64  `json:"errors_in"`
+	ErrorsOut           uint64  `json:"errors_out"`
+	DropsIn             uint64  `json:"drops_in"`
+	DropsOut            uint64  `json:"drops_out"`
+	ThroughputSentMbps  float64 `json:"throughput_sent_mbps"`
+	ThroughputRecvMbps  float64 `json:"throughput_received_mbps"`
+}
+
+// DiskIOMetrics contains I/O metrics for a disk
+type DiskIOMetrics struct {
+	Disk               string  `json:"disk"`
+	ReadCount          uint64  `json:"read_count"`
+	WriteCount         uint64  `json:"write_count"`
+	ReadBytes          uint64  `json:"read_bytes"`
+	WriteBytes         uint64  `json:"write_bytes"`
+	ReadTime           uint64  `json:"read_time_ms"`
+	WriteTime          uint64  `json:"write_time_ms"`
+	IoTime             uint64  `json:"io_time_ms"`
+	ReadIOPS           float64 `json:"read_iops"`
+	WriteIOPS          float64 `json:"write_iops"`
+	ReadThroughputMBs  float64 `json:"read_throughput_mb_s"`
+	WriteThroughputMBs float64 `json:"write_throughput_mb_s"`
 }
 
 // ConfigDiff represents a configuration change

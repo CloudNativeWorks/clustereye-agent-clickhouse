@@ -4,7 +4,8 @@ go 1.24.0
 
 require (
 	github.com/ClickHouse/clickhouse-go/v2 v2.18.0
-	github.com/CloudNativeWorks/clustereye-api v1.1.8
+	github.com/CloudNativeWorks/clustereye-api v1.1.10
+	github.com/google/uuid v1.6.0
 	github.com/shirou/gopsutil/v3 v3.23.12
 	golang.org/x/sys v0.38.0
 	google.golang.org/grpc v1.78.0
@@ -17,7 +18,6 @@ require (
 	github.com/go-faster/city v1.0.1 // indirect
 	github.com/go-faster/errors v0.7.1 // indirect
 	github.com/go-ole/go-ole v1.3.0 // indirect
-	github.com/google/uuid v1.6.0 // indirect
 	github.com/klauspost/compress v1.17.6 // indirect
 	github.com/lufia/plan9stats v0.0.0-20231016141302-07b5767bb0ed // indirect
 	github.com/paulmach/orb v0.11.1 // indirect

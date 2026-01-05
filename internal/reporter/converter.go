@@ -133,6 +133,11 @@ func ConvertClickhouseMetricsToMetrics(agentID string, metrics *model.Clickhouse
 		createIntMetric("clickhouse.cache.mark_files", metrics.MarkCacheFiles, "files", ""),
 	)
 
+	// Response time metric
+	pbMetrics = append(pbMetrics,
+		createDoubleMetric("clickhouse.response_time_ms", metrics.ResponseTimeMs, "ms", ""),
+	)
+
 	batch.Metrics = pbMetrics
 	return batch
 }
@@ -210,4 +215,162 @@ func createBoolMetric(name string, value bool, hostname string) *pb.Metric {
 	}
 
 	return metric
+}
+
+// ConvertNetworkMetricsToMetricBatch converts network metrics to a MetricBatch
+func ConvertNetworkMetricsToMetricBatch(agentID string, networkMetrics []model.NetworkInterfaceMetrics) *pb.MetricBatch {
+	if len(networkMetrics) == 0 {
+		return nil
+	}
+
+	batch := &pb.MetricBatch{
+		AgentId:             agentID,
+		MetricType:          "system_network",
+		CollectionTimestamp: time.Now().UnixNano(),
+	}
+
+	metrics := make([]*pb.Metric, 0)
+
+	for _, net := range networkMetrics {
+		iface := net.Interface
+
+		// Throughput metrics
+		metrics = append(metrics,
+			createDoubleMetricWithInterface("system.network.throughput_sent_mbps", net.ThroughputSentMbps, "mbps", iface),
+			createDoubleMetricWithInterface("system.network.throughput_received_mbps", net.ThroughputRecvMbps, "mbps", iface),
+		)
+
+		// Bytes metrics
+		metrics = append(metrics,
+			createUint64MetricWithInterface("system.network.bytes_sent", net.BytesSent, "bytes", iface),
+			createUint64MetricWithInterface("system.network.bytes_received", net.BytesReceived, "bytes", iface),
+		)
+
+		// Packets metrics
+		metrics = append(metrics,
+			createUint64MetricWithInterface("system.network.packets_sent", net.PacketsSent, "packets", iface),
+			createUint64MetricWithInterface("system.network.packets_received", net.PacketsReceived, "packets", iface),
+		)
+
+		// Errors and drops
+		metrics = append(metrics,
+			createUint64MetricWithInterface("system.network.errors_in", net.ErrorsIn, "count", iface),
+			createUint64MetricWithInterface("system.network.errors_out", net.ErrorsOut, "count", iface),
+			createUint64MetricWithInterface("system.network.drops_in", net.DropsIn, "count", iface),
+			createUint64MetricWithInterface("system.network.drops_out", net.DropsOut, "count", iface),
+		)
+	}
+
+	batch.Metrics = metrics
+	return batch
+}
+
+// ConvertDiskIOMetricsToMetricBatch converts disk I/O metrics to a MetricBatch
+func ConvertDiskIOMetricsToMetricBatch(agentID string, diskMetrics []model.DiskIOMetrics) *pb.MetricBatch {
+	if len(diskMetrics) == 0 {
+		return nil
+	}
+
+	batch := &pb.MetricBatch{
+		AgentId:             agentID,
+		MetricType:          "system_disk_io",
+		CollectionTimestamp: time.Now().UnixNano(),
+	}
+
+	metrics := make([]*pb.Metric, 0)
+
+	for _, disk := range diskMetrics {
+		diskName := disk.Disk
+
+		// IOPS metrics
+		metrics = append(metrics,
+			createDoubleMetricWithDisk("system.disk.read_iops", disk.ReadIOPS, "iops", diskName),
+			createDoubleMetricWithDisk("system.disk.write_iops", disk.WriteIOPS, "iops", diskName),
+		)
+
+		// Throughput metrics
+		metrics = append(metrics,
+			createDoubleMetricWithDisk("system.disk.read_throughput_mb_s", disk.ReadThroughputMBs, "mb/s", diskName),
+			createDoubleMetricWithDisk("system.disk.write_throughput_mb_s", disk.WriteThroughputMBs, "mb/s", diskName),
+		)
+
+		// Bytes metrics
+		metrics = append(metrics,
+			createUint64MetricWithDisk("system.disk.read_bytes", disk.ReadBytes, "bytes", diskName),
+			createUint64MetricWithDisk("system.disk.write_bytes", disk.WriteBytes, "bytes", diskName),
+		)
+
+		// Count metrics
+		metrics = append(metrics,
+			createUint64MetricWithDisk("system.disk.read_count", disk.ReadCount, "count", diskName),
+			createUint64MetricWithDisk("system.disk.write_count", disk.WriteCount, "count", diskName),
+		)
+
+		// Time metrics
+		metrics = append(metrics,
+			createUint64MetricWithDisk("system.disk.read_time_ms", disk.ReadTime, "ms", diskName),
+			createUint64MetricWithDisk("system.disk.write_time_ms", disk.WriteTime, "ms", diskName),
+			createUint64MetricWithDisk("system.disk.io_time_ms", disk.IoTime, "ms", diskName),
+		)
+	}
+
+	batch.Metrics = metrics
+	return batch
+}
+
+// Helper functions with interface/disk tags
+func createDoubleMetricWithInterface(name string, value float64, unit, iface string) *pb.Metric {
+	return &pb.Metric{
+		Name:      name,
+		Timestamp: time.Now().UnixNano(),
+		Unit:      unit,
+		Value: &pb.MetricValue{
+			Value: &pb.MetricValue_DoubleValue{DoubleValue: value},
+		},
+		Tags: []*pb.MetricTag{
+			{Key: "interface", Value: iface},
+		},
+	}
+}
+
+func createUint64MetricWithInterface(name string, value uint64, unit, iface string) *pb.Metric {
+	return &pb.Metric{
+		Name:      name,
+		Timestamp: time.Now().UnixNano(),
+		Unit:      unit,
+		Value: &pb.MetricValue{
+			Value: &pb.MetricValue_IntValue{IntValue: int64(value)},
+		},
+		Tags: []*pb.MetricTag{
+			{Key: "interface", Value: iface},
+		},
+	}
+}
+
+func createDoubleMetricWithDisk(name string, value float64, unit, disk string) *pb.Metric {
+	return &pb.Metric{
+		Name:      name,
+		Timestamp: time.Now().UnixNano(),
+		Unit:      unit,
+		Value: &pb.MetricValue{
+			Value: &pb.MetricValue_DoubleValue{DoubleValue: value},
+		},
+		Tags: []*pb.MetricTag{
+			{Key: "disk", Value: disk},
+		},
+	}
+}
+
+func createUint64MetricWithDisk(name string, value uint64, unit, disk string) *pb.Metric {
+	return &pb.Metric{
+		Name:      name,
+		Timestamp: time.Now().UnixNano(),
+		Unit:      unit,
+		Value: &pb.MetricValue{
+			Value: &pb.MetricValue_IntValue{IntValue: int64(value)},
+		},
+		Tags: []*pb.MetricTag{
+			{Key: "disk", Value: disk},
+		},
+	}
 }

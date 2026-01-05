@@ -320,15 +320,16 @@ func (c *ClickhouseCollector) GetClickhouseInfo() (*model.ClickhouseInfo, error)
 		}
 	}
 
-	// Get CPU count from asynchronous_metrics (numeric value only)
-	var cpuCount float64
-	err = conn.QueryRow(ctx, "SELECT value FROM system.asynchronous_metrics WHERE metric IN ('OSUserTimeCPUCores', 'NumberOfLogicalCPUCores', 'NumberOfPhysicalCPUCores') AND value != '' LIMIT 1").Scan(&cpuCount)
+	// Get CPU count by counting OSIdleTimeCPU metrics (one per CPU core)
+	var cpuCount uint64
+	err = conn.QueryRow(ctx, "SELECT count() FROM system.asynchronous_metrics WHERE metric LIKE 'OSIdleTimeCPU%'").Scan(&cpuCount)
 	if err != nil {
+		logger.Debug("Failed to get CPU count from OSIdleTimeCPU: %v", err)
 		// Fallback: try from system.settings
 		var cpuStr string
 		err = conn.QueryRow(ctx, "SELECT value FROM system.settings WHERE name = 'max_threads' LIMIT 1").Scan(&cpuStr)
 		if err != nil {
-			logger.Debug("Failed to get CPU count: %v", err)
+			logger.Debug("Failed to get CPU count from max_threads: %v", err)
 			info.TotalVCPU = 0
 		} else {
 			// Parse the CPU count from string (might be 'auto' or a number)
@@ -342,18 +343,18 @@ func (c *ClickhouseCollector) GetClickhouseInfo() (*model.ClickhouseInfo, error)
 		info.TotalVCPU = int(cpuCount)
 	}
 
-	// Get total memory from asynchronous_metrics (numeric value only)
+	// Get total memory from OSMemoryTotal (system total RAM)
 	var totalMemory float64
-	err = conn.QueryRow(ctx, "SELECT value FROM system.asynchronous_metrics WHERE metric IN ('OSMemoryTotal', 'OSMemoryAvailable', 'MemoryTracking') AND value != '' LIMIT 1").Scan(&totalMemory)
+	err = conn.QueryRow(ctx, "SELECT value FROM system.asynchronous_metrics WHERE metric = 'OSMemoryTotal'").Scan(&totalMemory)
 	if err != nil {
-		// Fallback: try from system.metrics
-		var memBytes int64
-		err = conn.QueryRow(ctx, "SELECT value FROM system.metrics WHERE metric = 'MemoryTracking' LIMIT 1").Scan(&memBytes)
+		logger.Debug("Failed to get OSMemoryTotal: %v", err)
+		// Fallback: try MemoryResident
+		err = conn.QueryRow(ctx, "SELECT value FROM system.asynchronous_metrics WHERE metric = 'MemoryResident'").Scan(&totalMemory)
 		if err != nil {
 			logger.Debug("Failed to get total memory: %v", err)
 			info.TotalMemory = 0
 		} else {
-			info.TotalMemory = memBytes
+			info.TotalMemory = int64(totalMemory)
 		}
 	} else {
 		info.TotalMemory = int64(totalMemory)

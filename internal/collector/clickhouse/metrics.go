@@ -80,28 +80,38 @@ func (c *ClickhouseCollector) CollectMetrics() (*model.ClickhouseMetrics, error)
 	}
 	metrics.RunningQueries = int64(runningQueries)
 
-	// Get memory metrics
-	var memoryUsage, memoryAvailable int64
+	// Get memory metrics from OS-level metrics (more accurate)
+	var osMemoryTotal, osMemoryAvailable float64
 	err = conn.QueryRow(ctx, `
-		SELECT value FROM system.metrics WHERE metric = 'MemoryTracking'
-	`).Scan(&memoryUsage)
+		SELECT value FROM system.asynchronous_metrics WHERE metric = 'OSMemoryTotal'
+	`).Scan(&osMemoryTotal)
 	if err != nil {
-		logger.Debug("Failed to get memory usage: %v", err)
+		logger.Debug("Failed to get OS total memory: %v", err)
 	}
-	metrics.MemoryUsage = memoryUsage
 
-	// Get total memory from system
 	err = conn.QueryRow(ctx, `
-		SELECT value FROM system.asynchronous_metrics WHERE metric = 'MemoryAvailable'
-	`).Scan(&memoryAvailable)
+		SELECT value FROM system.asynchronous_metrics WHERE metric = 'OSMemoryAvailable'
+	`).Scan(&osMemoryAvailable)
 	if err != nil {
-		logger.Debug("Failed to get available memory: %v", err)
+		logger.Debug("Failed to get OS available memory: %v", err)
 	}
-	metrics.MemoryAvailable = memoryAvailable
 
-	if memoryAvailable > 0 {
-		totalMemory := memoryUsage + memoryAvailable
-		metrics.MemoryPercent = (float64(memoryUsage) / float64(totalMemory)) * 100
+	// Calculate memory usage: Total - Available = Used
+	if osMemoryTotal > 0 {
+		memoryUsed := osMemoryTotal - osMemoryAvailable
+		metrics.MemoryUsage = int64(memoryUsed)
+		metrics.MemoryAvailable = int64(osMemoryAvailable)
+		metrics.MemoryPercent = (memoryUsed / osMemoryTotal) * 100
+	} else {
+		// Fallback to ClickHouse's internal memory tracking
+		var memoryTracking int64
+		err = conn.QueryRow(ctx, `
+			SELECT value FROM system.metrics WHERE metric = 'MemoryTracking'
+		`).Scan(&memoryTracking)
+		if err != nil {
+			logger.Debug("Failed to get memory tracking: %v", err)
+		}
+		metrics.MemoryUsage = memoryTracking
 	}
 
 	// Get disk metrics from system.parts
@@ -177,15 +187,30 @@ func (c *ClickhouseCollector) CollectMetrics() (*model.ClickhouseMetrics, error)
 	metrics.NetworkReceiveBytes = int64(networkReceive)
 	metrics.NetworkSendBytes = int64(networkSend)
 
-	// Get CPU usage
-	var cpuUsage float64
+	// Get CPU usage by calculating from idle time metrics
+	// CPU Usage % = (1 - average_idle_time) * 100
+	var avgIdleTime float64
+	var cpuCount uint64
 	err = conn.QueryRow(ctx, `
-		SELECT value FROM system.asynchronous_metrics WHERE metric = 'OSCPUVirtualTimeMicroseconds'
-	`).Scan(&cpuUsage)
+		SELECT
+			avg(value) as avg_idle,
+			count() as cpu_count
+		FROM system.asynchronous_metrics
+		WHERE metric LIKE 'OSIdleTimeCPU%'
+	`).Scan(&avgIdleTime, &cpuCount)
 	if err != nil {
-		logger.Debug("Failed to get CPU usage: %v", err)
+		logger.Debug("Failed to get CPU idle time: %v", err)
+		metrics.CPUUsage = 0
+	} else {
+		// Idle time is between 0 and 1, so CPU usage = (1 - idle) * 100
+		metrics.CPUUsage = (1.0 - avgIdleTime) * 100
+		if metrics.CPUUsage < 0 {
+			metrics.CPUUsage = 0
+		}
+		if metrics.CPUUsage > 100 {
+			metrics.CPUUsage = 100
+		}
 	}
-	metrics.CPUUsage = cpuUsage
 
 	// Get cache metrics
 	var markCacheBytes, markCacheFiles int64
