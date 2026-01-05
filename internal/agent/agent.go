@@ -11,6 +11,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/CloudNativeWorks/clustereye-agent-clickhouse/internal/alarm"
 	"github.com/CloudNativeWorks/clustereye-agent-clickhouse/internal/collector"
 	"github.com/CloudNativeWorks/clustereye-agent-clickhouse/internal/config"
 	"github.com/CloudNativeWorks/clustereye-agent-clickhouse/internal/logger"
@@ -19,12 +20,13 @@ import (
 
 // Agent represents the main agent orchestrator
 type Agent struct {
-	cfg       *config.AgentConfig
-	collector *collector.Collector
-	reporter  *reporter.Reporter
-	ctx       context.Context
-	cancel    context.CancelFunc
-	wg        sync.WaitGroup
+	cfg          *config.AgentConfig
+	collector    *collector.Collector
+	reporter     *reporter.Reporter
+	alarmMonitor *alarm.AlarmMonitor
+	ctx          context.Context
+	cancel       context.CancelFunc
+	wg           sync.WaitGroup
 }
 
 // NewAgent creates a new agent instance
@@ -74,6 +76,21 @@ func (a *Agent) Start() error {
 	// Set global reporter
 	reporter.SetGlobalReporter(a.reporter)
 
+	// Initialize and start alarm monitor
+	if a.reporter.IsConnected() {
+		client := a.reporter.GetClient()
+		if client != nil {
+			a.alarmMonitor = alarm.NewAlarmMonitor(
+				client,
+				a.cfg.Key,
+				a.cfg,
+				a.reporter.RefreshClient,
+			)
+			a.alarmMonitor.Start()
+			logger.Info("Alarm monitor started")
+		}
+	}
+
 	// Start background tasks
 	a.wg.Add(3)
 	go a.healthCheckLoop()
@@ -90,6 +107,12 @@ func (a *Agent) Start() error {
 // Stop stops the agent
 func (a *Agent) Stop() {
 	logger.Info("Stopping ClusterEye Agent...")
+
+	// Stop alarm monitor first
+	if a.alarmMonitor != nil {
+		a.alarmMonitor.Stop()
+	}
+
 	a.cancel()
 	a.wg.Wait()
 	a.reporter.Disconnect()

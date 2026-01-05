@@ -205,7 +205,38 @@ func (c *ClickhouseCollector) CollectMetrics() (*model.ClickhouseMetrics, error)
 	}
 	metrics.MarkCacheFiles = markCacheFiles
 
+	// Measure response time (SELECT 1 query latency)
+	responseTime := c.measureResponseTime()
+	metrics.ResponseTimeMs = responseTime
+	logger.Debug("ClickHouse response time: %.3f ms", responseTime)
+
 	return metrics, nil
+}
+
+// measureResponseTime measures the response time of a simple SELECT 1 query
+func (c *ClickhouseCollector) measureResponseTime() float64 {
+	start := time.Now()
+
+	conn, err := c.GetConnection()
+	if err != nil {
+		logger.Debug("Failed to get connection for response time measurement: %v", err)
+		return -1.0
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	var result uint8 // ClickHouse returns UInt8 for SELECT 1
+	err = conn.QueryRow(ctx, "SELECT 1").Scan(&result)
+	if err != nil {
+		logger.Debug("Failed to execute response time query: %v", err)
+		return -1.0
+	}
+
+	duration := time.Since(start)
+	responseTimeMs := float64(duration.Nanoseconds()) / float64(time.Millisecond)
+
+	return responseTimeMs
 }
 
 // CollectQueries collects query execution information

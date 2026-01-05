@@ -441,6 +441,49 @@ func (c *ClickhouseCollector) CollectData() (*model.ClickhouseData, error) {
 		data.SystemTables = systemData
 	}
 
+	// Collect advanced ClickHouse-specific metrics
+	// These are critical for performance monitoring and alarming
+
+	// Merge metrics (CRITICAL - merge backlog = future problems)
+	mergeMetrics, err := c.CollectMergeMetrics()
+	if err != nil {
+		logger.Warning("Failed to collect merge metrics: %v", err)
+	} else {
+		data.MergeMetrics = mergeMetrics
+	}
+
+	// Parts metrics (equivalent to PostgreSQL bloat)
+	partsMetrics, err := c.CollectPartsMetrics()
+	if err != nil {
+		logger.Warning("Failed to collect parts metrics: %v", err)
+	} else {
+		data.PartsMetrics = partsMetrics
+	}
+
+	// Memory pressure metrics
+	memoryPressure, err := c.CollectMemoryPressureMetrics()
+	if err != nil {
+		logger.Warning("Failed to collect memory pressure metrics: %v", err)
+	} else {
+		data.MemoryPressure = memoryPressure
+	}
+
+	// Query concurrency metrics
+	queryConcurrency, err := c.CollectQueryConcurrencyMetrics()
+	if err != nil {
+		logger.Warning("Failed to collect query concurrency metrics: %v", err)
+	} else {
+		data.QueryConcurrency = queryConcurrency
+	}
+
+	// ClickHouse errors (critical signals)
+	errors, err := c.CollectClickHouseErrors()
+	if err != nil {
+		logger.Warning("Failed to collect ClickHouse errors: %v", err)
+	} else {
+		data.Errors = errors
+	}
+
 	c.lastCollectionTime = time.Now()
 	return data, nil
 }

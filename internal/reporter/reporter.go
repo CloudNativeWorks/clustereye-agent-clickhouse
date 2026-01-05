@@ -148,6 +148,75 @@ func (r *Reporter) IsConnected() bool {
 	return r.isConnected
 }
 
+// GetClient returns the gRPC client
+func (r *Reporter) GetClient() pb.AgentServiceClient {
+	r.connMu.Lock()
+	defer r.connMu.Unlock()
+	return r.client
+}
+
+// RefreshClient reconnects and returns a new client
+func (r *Reporter) RefreshClient() (pb.AgentServiceClient, error) {
+	r.connMu.Lock()
+	defer r.connMu.Unlock()
+
+	// Close existing connection
+	if r.conn != nil {
+		r.conn.Close()
+		r.conn = nil
+		r.client = nil
+		r.isConnected = false
+	}
+
+	// Reconnect
+	logger.Info("Refreshing gRPC client connection...")
+
+	// Setup keepalive parameters
+	kacp := keepalive.ClientParameters{
+		Time:                20 * time.Second,
+		Timeout:             10 * time.Second,
+		PermitWithoutStream: true,
+	}
+
+	// Setup transport credentials
+	var creds credentials.TransportCredentials
+	if r.cfg.GRPC.TLSEnabled {
+		if r.cfg.GRPC.InsecureSkipVerify {
+			creds = credentials.NewTLS(&tls.Config{
+				InsecureSkipVerify: true,
+				NextProtos:         []string{"h2"},
+			})
+		} else {
+			creds = credentials.NewTLS(&tls.Config{
+				NextProtos: []string{"h2"},
+			})
+		}
+	} else {
+		creds = insecure.NewCredentials()
+	}
+
+	opts := []grpc.DialOption{
+		grpc.WithTransportCredentials(creds),
+		grpc.WithKeepaliveParams(kacp),
+		grpc.WithDefaultCallOptions(
+			grpc.MaxCallRecvMsgSize(128 * 1024 * 1024),
+			grpc.MaxCallSendMsgSize(128 * 1024 * 1024),
+		),
+	}
+
+	conn, err := grpc.Dial(r.cfg.GRPC.ServerAddress, opts...)
+	if err != nil {
+		return nil, fmt.Errorf("failed to reconnect to gRPC server: %w", err)
+	}
+
+	r.conn = conn
+	r.client = pb.NewAgentServiceClient(conn)
+	r.isConnected = true
+	logger.Info("gRPC client refreshed successfully")
+
+	return r.client, nil
+}
+
 // getLocalIP returns the local IP address
 func getLocalIP() string {
 	addrs, err := net.InterfaceAddrs()
@@ -231,17 +300,21 @@ func (r *Reporter) SendData(data interface{}) error {
 		}
 	}
 
-	// Send ClickHouse info as metrics
-	if systemData.Clickhouse != nil && systemData.Clickhouse.Info != nil {
-		if err := r.sendClickhouseInfo(systemData.Clickhouse.Info); err != nil {
-			logger.Warning("Failed to send ClickHouse info: %v", err)
-		}
-	}
-
-	// Send ClickHouse metrics
-	if systemData.Clickhouse != nil && systemData.Clickhouse.Metrics != nil {
-		if err := r.sendClickhouseMetrics(systemData.Clickhouse.Metrics); err != nil {
-			logger.Warning("Failed to send ClickHouse metrics: %v", err)
+	// Send ClickHouse data with advanced metrics using new API
+	if systemData.Clickhouse != nil {
+		if err := r.sendClickhouseData(systemData.Clickhouse); err != nil {
+			logger.Warning("Failed to send ClickHouse data: %v", err)
+			// Fallback to old methods for compatibility
+			if systemData.Clickhouse.Info != nil {
+				if err := r.sendClickhouseInfo(systemData.Clickhouse.Info); err != nil {
+					logger.Warning("Failed to send ClickHouse info: %v", err)
+				}
+			}
+			if systemData.Clickhouse.Metrics != nil {
+				if err := r.sendClickhouseMetrics(systemData.Clickhouse.Metrics); err != nil {
+					logger.Warning("Failed to send ClickHouse metrics: %v", err)
+				}
+			}
 		}
 	}
 
@@ -361,6 +434,215 @@ func (r *Reporter) sendClickhouseMetrics(metrics *model.ClickhouseMetrics) error
 	}
 
 	logger.Debug("ClickHouse metrics sent: %s - %s", resp.Status, resp.Message)
+	return nil
+}
+
+// sendClickhouseData sends complete ClickHouse data including advanced metrics
+func (r *Reporter) sendClickhouseData(chData *model.ClickhouseData) error {
+	if chData == nil {
+		return fmt.Errorf("no clickhouse data provided")
+	}
+
+	// Build the protobuf request
+	pbData := &pb.ClickhouseData{}
+
+	// Convert Info
+	if chData.Info != nil {
+		pbData.Info = &pb.ClickhouseInfo{
+			ClusterName:  chData.Info.ClusterName,
+			Ip:           chData.Info.IP,
+			Hostname:     chData.Info.Hostname,
+			NodeStatus:   chData.Info.NodeStatus,
+			Version:      chData.Info.Version,
+			Location:     chData.Info.Location,
+			Status:       chData.Info.Status,
+			Port:         chData.Info.Port,
+			Uptime:       chData.Info.Uptime,
+			ConfigPath:   chData.Info.ConfigPath,
+			DataPath:     chData.Info.DataPath,
+			IsReplicated: chData.Info.IsReplicated,
+			ReplicaCount: int32(chData.Info.ReplicaCount),
+			ShardCount:   int32(chData.Info.ShardCount),
+			TotalVcpu:    int32(chData.Info.TotalVCPU),
+			TotalMemory:  chData.Info.TotalMemory,
+		}
+	}
+
+	// Convert Metrics
+	if chData.Metrics != nil {
+		pbData.Metrics = &pb.ClickhouseMetrics{
+			CurrentConnections:     chData.Metrics.CurrentConnections,
+			MaxConnections:         chData.Metrics.MaxConnections,
+			QueriesPerSecond:       chData.Metrics.QueriesPerSecond,
+			SelectQueriesPerSecond: chData.Metrics.SelectQueriesPerSecond,
+			InsertQueriesPerSecond: chData.Metrics.InsertQueriesPerSecond,
+			RunningQueries:         chData.Metrics.RunningQueries,
+			QueuedQueries:          chData.Metrics.QueuedQueries,
+			MemoryUsage:            chData.Metrics.MemoryUsage,
+			MemoryAvailable:        chData.Metrics.MemoryAvailable,
+			MemoryPercent:          chData.Metrics.MemoryPercent,
+			DiskUsage:              chData.Metrics.DiskUsage,
+			DiskAvailable:          chData.Metrics.DiskAvailable,
+			DiskPercent:            chData.Metrics.DiskPercent,
+			MergesInProgress:       chData.Metrics.MergesInProgress,
+			PartsCount:             chData.Metrics.PartsCount,
+			RowsRead:               chData.Metrics.RowsRead,
+			BytesRead:              chData.Metrics.BytesRead,
+			NetworkReceiveBytes:    chData.Metrics.NetworkReceiveBytes,
+			NetworkSendBytes:       chData.Metrics.NetworkSendBytes,
+			CpuUsage:               chData.Metrics.CPUUsage,
+			MarkCacheBytes:         chData.Metrics.MarkCacheBytes,
+			MarkCacheFiles:         chData.Metrics.MarkCacheFiles,
+			CollectionTime:         chData.Metrics.CollectionTime.UnixNano(),
+		}
+	}
+
+	// Convert MergeMetrics
+	if chData.MergeMetrics != nil {
+		pbMerge := &pb.MergeMetrics{
+			ActiveMerges:        chData.MergeMetrics.ActiveMerges,
+			MutationMerges:      chData.MergeMetrics.MutationMerges,
+			BackgroundMerges:    chData.MergeMetrics.BackgroundMerges,
+			TotalMergeTimeSec:   chData.MergeMetrics.TotalMergeTime,
+			MaxMergeElapsedSec:  chData.MergeMetrics.MaxMergeElapsed,
+			AvgMergeElapsedSec:  chData.MergeMetrics.AvgMergeElapsed,
+			MergeBytesRead:      chData.MergeMetrics.MergeBytesRead,
+			MergeBytesWritten:   chData.MergeMetrics.MergeBytesWritten,
+			MergeRowsRead:       chData.MergeMetrics.MergeRowsRead,
+			MergeRowsWritten:    chData.MergeMetrics.MergeRowsWritten,
+			MergeThroughputMbS:  chData.MergeMetrics.MergeThroughputMBs,
+			MergeBacklog:        chData.MergeMetrics.MergeBacklog,
+			MergeQueueSize:      chData.MergeMetrics.MergeQueueSize,
+			CollectionTime:      chData.MergeMetrics.CollectionTime.UnixNano(),
+		}
+
+		// Convert table merges
+		for _, tm := range chData.MergeMetrics.TableMerges {
+			pbMerge.TableMerges = append(pbMerge.TableMerges, &pb.TableMergeInfo{
+				Database:       tm.Database,
+				Table:          tm.Table,
+				ActiveMerges:   tm.ActiveMerges,
+				MergeProgress:  tm.MergeProgress,
+				BytesProcessed: tm.BytesProcessed,
+				ElapsedTimeSec: tm.ElapsedTime,
+				IsMutation:     tm.IsMutation,
+			})
+		}
+
+		pbData.MergeMetrics = pbMerge
+	}
+
+	// Convert PartsMetrics
+	if chData.PartsMetrics != nil {
+		pbParts := &pb.PartsMetrics{
+			TotalParts:        chData.PartsMetrics.TotalParts,
+			ActiveParts:       chData.PartsMetrics.ActiveParts,
+			InactiveParts:     chData.PartsMetrics.InactiveParts,
+			SmallPartsCount:   chData.PartsMetrics.SmallPartsCount,
+			SmallPartsRatio:   chData.PartsMetrics.SmallPartsRatio,
+			TotalBytesOnDisk:  chData.PartsMetrics.TotalBytesOnDisk,
+			TotalRows:         chData.PartsMetrics.TotalRows,
+			MaxPartsPerTable:  chData.PartsMetrics.MaxPartsPerTable,
+			CollectionTime:    chData.PartsMetrics.CollectionTime.UnixNano(),
+		}
+
+		// Convert tables with too many parts
+		for _, t := range chData.PartsMetrics.TablesWithTooManyParts {
+			pbParts.TablesWithTooManyParts = append(pbParts.TablesWithTooManyParts, &pb.TablePartsInfo{
+				Database:    t.Database,
+				Table:       t.Table,
+				PartsCount:  t.PartsCount,
+				ActiveParts: t.ActiveParts,
+				SmallParts:  t.SmallParts,
+				TotalBytes:  t.TotalBytes,
+				TotalRows:   t.TotalRows,
+				AvgPartSize: t.AvgPartSize,
+				Engine:      t.Engine,
+			})
+		}
+
+		pbData.PartsMetrics = pbParts
+	}
+
+	// Convert MemoryPressure
+	if chData.MemoryPressure != nil {
+		pbData.MemoryPressure = &pb.MemoryPressureMetrics{
+			MemoryTracking:                   chData.MemoryPressure.MemoryTracking,
+			MemoryTrackingForMerges:          chData.MemoryPressure.MemoryTrackingForMerges,
+			MemoryTrackingForQueries:         chData.MemoryPressure.MemoryTrackingForQueries,
+			MaxServerMemoryUsage:             chData.MemoryPressure.MaxServerMemoryUsage,
+			MemoryUsagePercent:               chData.MemoryPressure.MemoryUsagePercent,
+			QueryMemoryLimitExceeded:         chData.MemoryPressure.QueryMemoryLimitExceeded,
+			MemoryOvercommitWaitTimeMicrosec: chData.MemoryPressure.MemoryOvercommitWaitTime,
+			CannotAllocateMemory:             chData.MemoryPressure.CannotAllocateMemory,
+			MemoryAllocateFail:               chData.MemoryPressure.MemoryAllocateFail,
+			MarkCacheBytes:                   chData.MemoryPressure.MarkCacheBytes,
+			UncompressedCacheBytes:           chData.MemoryPressure.UncompressedCacheBytes,
+			CollectionTime:                   chData.MemoryPressure.CollectionTime.UnixNano(),
+		}
+	}
+
+	// Convert QueryConcurrency
+	if chData.QueryConcurrency != nil {
+		pbQuery := &pb.QueryConcurrencyMetrics{
+			RunningQueries:          chData.QueryConcurrency.RunningQueries,
+			RunningSelectQueries:    chData.QueryConcurrency.RunningSelectQueries,
+			RunningInsertQueries:    chData.QueryConcurrency.RunningInsertQueries,
+			QueuedQueries:           chData.QueryConcurrency.QueuedQueries,
+			QueryPreempted:          chData.QueryConcurrency.QueryPreempted,
+			LongRunningQueries:      chData.QueryConcurrency.LongRunningQueries,
+			VeryLongRunningQueries:  chData.QueryConcurrency.VeryLongRunningQueries,
+			MaxQueryElapsedSec:      chData.QueryConcurrency.MaxQueryElapsed,
+			TotalQueryMemoryUsage:   chData.QueryConcurrency.TotalQueryMemoryUsage,
+			TotalReadRows:           chData.QueryConcurrency.TotalReadRows,
+			TotalReadBytes:          chData.QueryConcurrency.TotalReadBytes,
+			CollectionTime:          chData.QueryConcurrency.CollectionTime.UnixNano(),
+		}
+
+		// Convert long running query details
+		for _, q := range chData.QueryConcurrency.LongRunningQueryDetails {
+			pbQuery.LongRunningQueryDetails = append(pbQuery.LongRunningQueryDetails, &pb.LongRunningQueryInfo{
+				QueryId:        q.QueryID,
+				User:           q.User,
+				Query:          q.Query,
+				ElapsedTimeSec: q.ElapsedTime,
+				MemoryUsage:    q.MemoryUsage,
+				ReadRows:       q.ReadRows,
+				ReadBytes:      q.ReadBytes,
+				Database:       q.Database,
+				IsCancelled:    q.IsCancelled,
+			})
+		}
+
+		pbData.QueryConcurrency = pbQuery
+	}
+
+	// Convert Errors
+	for _, e := range chData.Errors {
+		pbData.Errors = append(pbData.Errors, &pb.ClickHouseError{
+			Name:             e.Name,
+			Code:             e.Code,
+			Value:            e.Value,
+			LastErrorTime:    e.LastErrorTime.Unix(),
+			LastErrorMessage: e.LastErrorMessage,
+			RemoteHosts:      e.RemoteHosts,
+		})
+	}
+
+	req := &pb.ClickhouseDataRequest{
+		AgentKey: r.cfg.Key,
+		Data:     pbData,
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+
+	resp, err := r.client.SendClickhouseData(ctx, req)
+	if err != nil {
+		return fmt.Errorf("failed to send ClickHouse data: %w", err)
+	}
+
+	logger.Debug("ClickHouse data sent: %s - %s", resp.Status, resp.Message)
 	return nil
 }
 

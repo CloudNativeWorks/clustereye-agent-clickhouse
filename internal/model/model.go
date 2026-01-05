@@ -15,12 +15,18 @@ type SystemData struct {
 
 // ClickhouseData contains all ClickHouse-specific monitoring data
 type ClickhouseData struct {
-	Info            *ClickhouseInfo     `json:"info"`
-	Metrics         *ClickhouseMetrics  `json:"metrics"`
-	Queries         []ClickhouseQuery   `json:"queries,omitempty"`
-	Tables          []TableMetric       `json:"tables,omitempty"`
-	Replication     *ReplicationStatus  `json:"replication,omitempty"`
-	SystemTables    *SystemTablesData   `json:"system_tables,omitempty"`
+	Info            *ClickhouseInfo          `json:"info"`
+	Metrics         *ClickhouseMetrics       `json:"metrics"`
+	Queries         []ClickhouseQuery        `json:"queries,omitempty"`
+	Tables          []TableMetric            `json:"tables,omitempty"`
+	Replication     *ReplicationStatus       `json:"replication,omitempty"`
+	SystemTables    *SystemTablesData        `json:"system_tables,omitempty"`
+	// New ClickHouse-specific metrics
+	MergeMetrics    *MergeMetrics            `json:"merge_metrics,omitempty"`
+	PartsMetrics    *PartsMetrics            `json:"parts_metrics,omitempty"`
+	MemoryPressure  *MemoryPressureMetrics   `json:"memory_pressure,omitempty"`
+	QueryConcurrency *QueryConcurrencyMetrics `json:"query_concurrency,omitempty"`
+	Errors          []ClickHouseError        `json:"errors,omitempty"`
 }
 
 // ClickhouseInfo contains basic ClickHouse instance information
@@ -83,6 +89,9 @@ type ClickhouseMetrics struct {
 	// Cache metrics
 	MarkCacheBytes   int64 `json:"mark_cache_bytes"`
 	MarkCacheFiles   int64 `json:"mark_cache_files"`
+
+	// Response time metric (SELECT 1 query latency in milliseconds)
+	ResponseTimeMs   float64 `json:"response_time_ms"`
 
 	CollectionTime   time.Time `json:"collection_time"`
 }
@@ -251,4 +260,194 @@ type AlarmEvent struct {
 	Threshold    float64                `json:"threshold"`
 	Timestamp    time.Time              `json:"timestamp"`
 	Metadata     map[string]interface{} `json:"metadata,omitempty"`
+}
+
+// ============================================================================
+// ClickHouse-Specific Advanced Metrics
+// ============================================================================
+
+// MergeMetrics contains metrics about ClickHouse merge operations (CRITICAL for performance)
+type MergeMetrics struct {
+	// Active merge counts
+	ActiveMerges      int64   `json:"active_merges"`
+	MutationMerges    int64   `json:"mutation_merges"`
+	BackgroundMerges  int64   `json:"background_merges"`
+
+	// Merge performance
+	TotalMergeTime     float64 `json:"total_merge_time_sec"`
+	MaxMergeElapsed    float64 `json:"max_merge_elapsed_sec"`
+	AvgMergeElapsed    float64 `json:"avg_merge_elapsed_sec"`
+
+	// Merge I/O
+	MergeBytesRead     int64   `json:"merge_bytes_read"`
+	MergeBytesWritten  int64   `json:"merge_bytes_written"`
+	MergeRowsRead      int64   `json:"merge_rows_read"`
+	MergeRowsWritten   int64   `json:"merge_rows_written"`
+
+	// Derived metrics
+	MergeThroughputMBs float64 `json:"merge_throughput_mb_s"`
+	MergeBacklog       int64   `json:"merge_backlog"`        // Pending merges
+	MergeQueueSize     int64   `json:"merge_queue_size"`
+
+	// Per-table merge info (tables with active merges)
+	TableMerges        []TableMergeInfo `json:"table_merges,omitempty"`
+
+	CollectionTime     time.Time `json:"collection_time"`
+}
+
+// TableMergeInfo contains merge info for a specific table
+type TableMergeInfo struct {
+	Database        string  `json:"database"`
+	Table           string  `json:"table"`
+	ActiveMerges    int64   `json:"active_merges"`
+	MergeProgress   float64 `json:"merge_progress"`
+	BytesProcessed  int64   `json:"bytes_processed"`
+	ElapsedTime     float64 `json:"elapsed_time_sec"`
+	IsMutation      bool    `json:"is_mutation"`
+}
+
+// PartsMetrics contains metrics about ClickHouse parts (equivalent to PostgreSQL bloat)
+type PartsMetrics struct {
+	// Global part counts
+	TotalParts       int64   `json:"total_parts"`
+	ActiveParts      int64   `json:"active_parts"`
+	InactiveParts    int64   `json:"inactive_parts"`
+
+	// Small parts analysis (too many small parts = merge can't keep up)
+	SmallPartsCount  int64   `json:"small_parts_count"`   // Parts < 10MB
+	SmallPartsRatio  float64 `json:"small_parts_ratio"`   // Ratio of small parts
+
+	// Size metrics
+	TotalBytesOnDisk int64   `json:"total_bytes_on_disk"`
+	TotalRows        int64   `json:"total_rows"`
+
+	// Problem tables (too many parts)
+	TablesWithTooManyParts []TablePartsInfo `json:"tables_with_too_many_parts,omitempty"`
+
+	// Thresholds for alarming
+	MaxPartsPerTable int64 `json:"max_parts_per_table"`
+
+	CollectionTime   time.Time `json:"collection_time"`
+}
+
+// TablePartsInfo contains parts info for tables with issues
+type TablePartsInfo struct {
+	Database         string  `json:"database"`
+	Table            string  `json:"table"`
+	PartsCount       int64   `json:"parts_count"`
+	ActiveParts      int64   `json:"active_parts"`
+	SmallParts       int64   `json:"small_parts"`
+	TotalBytes       int64   `json:"total_bytes"`
+	TotalRows        int64   `json:"total_rows"`
+	AvgPartSize      int64   `json:"avg_part_size"`
+	Engine           string  `json:"engine"`
+}
+
+// MemoryPressureMetrics contains memory-related metrics (ClickHouse is memory-aggressive)
+type MemoryPressureMetrics struct {
+	// Current memory tracking
+	MemoryTracking         int64 `json:"memory_tracking"`
+	MemoryTrackingForMerges int64 `json:"memory_tracking_for_merges"`
+	MemoryTrackingForQueries int64 `json:"memory_tracking_for_queries"`
+
+	// Memory limits
+	MaxServerMemoryUsage   int64   `json:"max_server_memory_usage"`
+	MemoryUsagePercent     float64 `json:"memory_usage_percent"`
+
+	// Memory pressure events (from system.events)
+	QueryMemoryLimitExceeded  int64 `json:"query_memory_limit_exceeded"`
+	MemoryOvercommitWaitTime  int64 `json:"memory_overcommit_wait_time_microsec"`
+
+	// Memory allocation failures
+	CannotAllocateMemory     int64 `json:"cannot_allocate_memory"`
+	MemoryAllocateFail       int64 `json:"memory_allocate_fail"`
+
+	// Cache memory
+	MarkCacheBytes           int64 `json:"mark_cache_bytes"`
+	UncompressedCacheBytes   int64 `json:"uncompressed_cache_bytes"`
+
+	CollectionTime           time.Time `json:"collection_time"`
+}
+
+// QueryConcurrencyMetrics contains query execution metrics
+type QueryConcurrencyMetrics struct {
+	// Running queries
+	RunningQueries       int64   `json:"running_queries"`
+	RunningSelectQueries int64   `json:"running_select_queries"`
+	RunningInsertQueries int64   `json:"running_insert_queries"`
+
+	// Queue metrics
+	QueuedQueries        int64   `json:"queued_queries"`
+	QueryPreempted       int64   `json:"query_preempted"`
+
+	// Long running queries
+	LongRunningQueries   int64   `json:"long_running_queries"`      // > 60s
+	VeryLongRunningQueries int64 `json:"very_long_running_queries"` // > 300s
+	MaxQueryElapsed      float64 `json:"max_query_elapsed_sec"`
+
+	// Resource usage by queries
+	TotalQueryMemoryUsage int64  `json:"total_query_memory_usage"`
+	TotalReadRows         int64  `json:"total_read_rows"`
+	TotalReadBytes        int64  `json:"total_read_bytes"`
+
+	// Query details for long running ones
+	LongRunningQueryDetails []LongRunningQuery `json:"long_running_query_details,omitempty"`
+
+	CollectionTime       time.Time `json:"collection_time"`
+}
+
+// LongRunningQuery contains details about a long-running query
+type LongRunningQuery struct {
+	QueryID      string  `json:"query_id"`
+	User         string  `json:"user"`
+	Query        string  `json:"query"`
+	ElapsedTime  float64 `json:"elapsed_time_sec"`
+	MemoryUsage  int64   `json:"memory_usage"`
+	ReadRows     int64   `json:"read_rows"`
+	ReadBytes    int64   `json:"read_bytes"`
+	Database     string  `json:"database"`
+	IsCancelled  bool    `json:"is_cancelled"`
+}
+
+// ClickHouseError represents an error from system.errors
+type ClickHouseError struct {
+	Name            string    `json:"name"`
+	Code            int64     `json:"code"`
+	Value           int64     `json:"value"`             // Error count
+	LastErrorTime   time.Time `json:"last_error_time"`
+	LastErrorMessage string   `json:"last_error_message"`
+	RemoteHosts     string    `json:"remote_hosts,omitempty"`
+}
+
+// ReplicaMetrics contains detailed replica metrics (enhanced from existing)
+type ReplicaMetrics struct {
+	Database          string    `json:"database"`
+	Table             string    `json:"table"`
+	IsLeader          bool      `json:"is_leader"`
+	IsReadonly        bool      `json:"is_readonly"`
+	IsSessionExpired  bool      `json:"is_session_expired"`
+	AbsoluteDelay     int64     `json:"absolute_delay"`
+	QueueSize         int64     `json:"queue_size"`
+	InsertsInQueue    int64     `json:"inserts_in_queue"`
+	MergesInQueue     int64     `json:"merges_in_queue"`
+	LogPointer        int64     `json:"log_pointer"`
+	TotalReplicas     int64     `json:"total_replicas"`
+	ActiveReplicas    int64     `json:"active_replicas"`
+	LastQueueUpdate   time.Time `json:"last_queue_update"`
+}
+
+// MutationMetrics contains detailed mutation metrics
+type MutationMetrics struct {
+	Database           string    `json:"database"`
+	Table              string    `json:"table"`
+	MutationID         string    `json:"mutation_id"`
+	Command            string    `json:"command"`
+	CreateTime         time.Time `json:"create_time"`
+	BlockNumbersAcquired int64   `json:"block_numbers_acquired"`
+	PartsToDo          int64     `json:"parts_to_do"`
+	IsDone             bool      `json:"is_done"`
+	LatestFailReason   string    `json:"latest_fail_reason,omitempty"`
+	LatestFailTime     time.Time `json:"latest_fail_time,omitempty"`
+	// Calculated field
+	AgeSeconds         float64   `json:"age_seconds"`
 }
